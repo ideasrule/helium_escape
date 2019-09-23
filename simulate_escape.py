@@ -140,6 +140,8 @@ def iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp, a1, a3, rate1, ra
     n_singlet = n_He * f1_interp(r_mesh)
     n_triplet = n_He * f3_interp(r_mesh)
     n_HeII = n_He - n_singlet - n_triplet
+    n3_interp = interp1d(r_mesh, n_triplet)
+    
     np.save("r_mesh.npy", r_mesh)
     np.save("n_triplet.npy", n_triplet)
     np.save("all_v.npy", v_interp(r_mesh))
@@ -149,7 +151,7 @@ def iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp, a1, a3, rate1, ra
     plt.semilogy(r_mesh / Rp, n_HeII)
     plt.show()
     
-    return f1_interp, f3_interp, tau1_interp, tau3_interp
+    return n3_interp
 
 def He_recomb_coeffs(T):
     #Taken from https://arxiv.org/pdf/astro-ph/9509083.pdf
@@ -221,7 +223,7 @@ def parker_solution(T0, mu, planet_mass, mass_loss_rate):
     r_s = sonic_r * Rs
     rho_s = Rhos * rho_crit
 
-    return v_s, r_s, rho_s, T0
+    return v_s, r_s, rho_s
 
 
 def iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp):
@@ -262,43 +264,6 @@ def iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp):
         
     return r_mesh, fion_interp, taus_interp
 
-def fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp):
-    rho_interp = scipy.interpolate.interp1d(all_r, all_rho)
-    v_interp = scipy.interpolate.interp1d(all_r, all_v)
-
-    def bc(ya, yb):
-        initial_f_ion = ya[1]
-        final_tau = yb[0]
-        return np.array([initial_f_ion, final_tau])
-    
-    def get_derivs(r, variables):
-        tau_0, f_ion = variables
-        alpha_rec = 2.59e-13 * (T0/1e4)**-0.7
-        neutral_fraction = 1 - f_ion
-        
-        tau_deriv = -neutral_fraction * rho_interp(r) * 0.9 * a0 / 1.3 / AMU   
-        fion_deriv = neutral_fraction / v_interp(r) * photo_rate * np.exp(-tau_0) - 0.9 * rho_interp(r) * f_ion**2 * alpha_rec / (1.3 * AMU * v_interp(r))
-        #if f_ion >= 1:
-        #    fion_deriv = 0
-        
-        print(tau_0[0], f_ion[0], tau_deriv[0], fion_deriv[0])
-        return np.vstack((tau_deriv, fion_deriv))
-
-    r_mesh = np.linspace(Rp, 10*Rp, 5)
-    guess = np.zeros((2, len(r_mesh)))
-    #guess[0] = 0
-    #guess[1] = np.linspace(0, 0.2, 5)
-    result = solve_bvp(get_derivs, bc, r_mesh, guess)
-
-    x_plot = np.linspace(Rp, 10*Rp, 100)
-    print(result.sol(x_plot).shape)
-    y_plot = result.sol(x_plot)
-    print(y_plot[1])
-
-    plt.plot(x_plot / Rp, y_plot[0], label="tau")
-    plt.plot(x_plot / Rp, y_plot[1], label="fion")
-    plt.legend()
-    plt.show()
 
 def singlet_cross_sections(wavelengths, data_filename="singlet_He_ionization"):
     energies, data_sigmas = np.loadtxt(data_filename, unpack=True)
@@ -323,39 +288,25 @@ def triplet_cross_sections(wavelengths, data_filename="triplet_He_ionization"):
     return sigmas_interp
 
 
-print(He_recomb_coeffs(5000))
-all_v, all_r, all_rho, T0 = parker_solution(5000, 1.3, 0.073 * M_jup, 2e10)
-print("T0=", T0)
-wavelengths, fluxes = get_stellar_spectrum(sys.argv[1])
+def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate):    
+    all_v, all_r, all_rho = parker_solution(T0, 1.3, Mp, mass_loss_rate)
+    wavelengths, fluxes = get_stellar_spectrum(spectrum_file)
 
+    #Helium testing
+    singlet_sigmas = singlet_cross_sections(wavelengths)
+    a1 = avg_cross_section(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
+    triplet_sigmas = triplet_cross_sections(wavelengths)
+    a3 = avg_cross_section(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
 
-#Helium testing
-singlet_sigmas = singlet_cross_sections(wavelengths)
-a1 = avg_cross_section(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
-triplet_sigmas = triplet_cross_sections(wavelengths)
-a3 = avg_cross_section(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
+    photo_cross_sections = photoionization_cross_section(wavelengths)
+    a0 = avg_cross_section(wavelengths, fluxes, photo_cross_sections, 0, WAVELENGTH_0)
+    photo_rate = photoionization_rate(wavelengths, fluxes, photo_cross_sections, 0, WAVELENGTH_0)
+    rate1 = photoionization_rate(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
+    rate3 = photoionization_rate(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
 
-print(a1, a3)
-print(singlet_sigmas)
-print(triplet_sigmas)
-'''plt.semilogy(wavelengths*1e8, singlet_sigmas/1e-18)
-plt.semilogy(wavelengths*1e8, triplet_sigmas/1e-18)
-plt.show()'''
+    r_mesh, fion_interp, taus_interp = iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp)
+    n3_interp = iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp)
+    return r_mesh, v_interp, n3_interp
 
+get_solution(sys.argv[1], 0.073 * M_jup, 0.38 * R_jup, 5000, 2e10)
 
-photo_cross_sections = photoionization_cross_section(wavelengths)
-a0 = avg_cross_section(wavelengths, fluxes, photo_cross_sections, 0, WAVELENGTH_0)
-photo_rate = photoionization_rate(wavelengths, fluxes, photo_cross_sections, 0, WAVELENGTH_0)
-rate1 = photoionization_rate(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
-rate3 = photoionization_rate(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
-
-r_mesh, fion_interp, taus_interp = iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, 0.38 * R_jup)
-iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, 0.38 * R_jup, a1, a3, rate1, rate3, fion_interp)
-exit(0)
-
-
-wavelengths = np.linspace(1e-7, 90e-7, 1000)
-frequencies = c / wavelengths
-print(frequencies)
-plt.loglog(wavelengths * 1e7, photoionization_cross_section(frequencies))
-plt.show()
