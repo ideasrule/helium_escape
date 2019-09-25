@@ -18,7 +18,6 @@ TRIPLET_ION = 2588 / CM_TO_ANGSTROM
 AMU = 1.67e-24
 G = 6.67e-8
 k_B = 1.38e-16
-D_over_a = 69e6
 eV_to_erg = 1.6e-12
 Mb_to_cm2 = 1e-18
 
@@ -28,9 +27,7 @@ q31a = 2.6e-8
 q31b = 4.0e-9
 Q31 = 5e-10
 
-def iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp):
-    rho_interp = scipy.interpolate.interp1d(all_r, all_rho)
-    v_interp = scipy.interpolate.interp1d(all_r, all_v)
+def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp):
     alpha_He = He_recomb_coeffs(T0)
 
     def tau_derivs(r, variables, f1_interp, f3_interp):
@@ -142,14 +139,14 @@ def iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp, a1, a3, rate1, ra
     n_HeII = n_He - n_singlet - n_triplet
     n3_interp = interp1d(r_mesh, n_triplet)
     
-    np.save("r_mesh.npy", r_mesh)
+    '''np.save("r_mesh.npy", r_mesh)
     np.save("n_triplet.npy", n_triplet)
     np.save("all_v.npy", v_interp(r_mesh))
     
     plt.semilogy(r_mesh / Rp, n_singlet)
     plt.semilogy(r_mesh / Rp, n_triplet)
     plt.semilogy(r_mesh / Rp, n_HeII)
-    plt.show()
+    plt.show()'''
     
     return n3_interp
 
@@ -170,7 +167,7 @@ def He_recomb_coeffs(T):
     alt_alpha_r = 1e-13 * a * t**b / (1 + c * t**d)
     return (alpha_r + alt_alpha_r) / 2
 
-def get_stellar_spectrum(filename):
+def get_stellar_spectrum(filename, D_over_a):
     with astropy.io.fits.open(filename) as hdul:
         return hdul[1].data["WAVELENGTH"] / CM_TO_ANGSTROM, hdul[1].data["FLUX"] * CM_TO_ANGSTROM * D_over_a**2
 
@@ -219,17 +216,16 @@ def parker_solution(T0, mu, planet_mass, mass_loss_rate):
     Vs = np.load("Vs.npy")
     Rhos = np.exp(2/Rs - 3./2 - Vs**2/2)
 
-    v_s = Vs * sound_speed
-    r_s = sonic_r * Rs
-    rho_s = Rhos * rho_crit
+    all_v = Vs * sound_speed
+    all_r = sonic_r * Rs
+    all_rho = Rhos * rho_crit
 
-    return v_s, r_s, rho_s
+    return interp1d(all_r, all_v), interp1d(all_r, all_rho)
 
 
-def iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp):
-    rho_interp = scipy.interpolate.interp1d(all_r, all_rho)
-    v_interp = scipy.interpolate.interp1d(all_r, all_v)
-
+def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp):
+    alpha_rec = 2.59e-13 * (T0/1e4)**-0.7
+            
     def tau_derivs(r, variables, fion_interp):
         neutral_fraction = 1 - fion_interp(r)
         tau_deriv = -neutral_fraction * rho_interp(r) * 0.9 * a0 / 1.3 / AMU
@@ -239,11 +235,17 @@ def iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp):
     def fion_derivs(r, variables, tau_interp):
         f_ion = variables[0]
         tau_0 = tau_interp(r)
-        alpha_rec = 2.59e-13 * (T0/1e4)**-0.7
         neutral_fraction = 1 - f_ion
         fion_deriv = neutral_fraction / v_interp(r) * photo_rate * np.exp(-tau_0) - 0.9 * rho_interp(r) * f_ion**2 * alpha_rec / (1.3 * AMU * v_interp(r))
         #print(r, neutral_fraction / v_interp(r) * photo_rate * np.exp(-tau_0), 0.9 * rho_interp(r) * f_ion**2 * alpha_rec / (1.3 * AMU * v_interp(r)))
+        #print(r, f_ion, fion_deriv)
         return [fion_deriv]
+
+    def fion_jac(r, variables, tau_interp):
+        f_ion = variables[0]
+        jac = np.zeros((1,1))
+        jac[0,0] = -1./v_interp(r) * photo_rate * np.exp(-tau_interp(r)) - 0.9 * rho_interp(r) * 2 * f_ion * alpha_rec / (1.3 * AMU * v_interp(r))
+        return jac
 
     r_mesh = np.linspace(Rp, 10*Rp, 100)
     fion_interp = interp1d(r_mesh, np.zeros(len(r_mesh)))
@@ -252,9 +254,15 @@ def iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp):
     while True:
         result = solve_ivp(lambda r, y: tau_derivs(r, y, fion_interp), (10*Rp, Rp), [0], t_eval=r_mesh[::-1])
         taus_interp = interp1d(r_mesh, result.y[0][::-1])
-        result = solve_ivp(lambda r, y: fion_derivs(r, y, taus_interp), (Rp, 10*Rp), [0], t_eval=r_mesh)
-        if np.allclose(fion_interp(r_mesh), result.y[0]):
+        result = solve_ivp(lambda r, y: fion_derivs(r, y, taus_interp), (Rp, 10*Rp), [0], t_eval=r_mesh)#,
+                           #jac=lambda r, y: fion_jac(r, y, taus_interp),
+                           #method='Radau')
+        max_diff = np.max(np.abs(fion_interp(r_mesh) - result.y[0]))
+        print(max_diff)
+        if max_diff < 1e-3:
             break
+        #if np.allclose(fion_interp(r_mesh), result.y[0]):
+        #    break
         fion_interp = interp1d(r_mesh, result.y[0])
         
         '''print(fion_interp(2*Rp), taus_interp(2*Rp))
@@ -288,11 +296,11 @@ def triplet_cross_sections(wavelengths, data_filename="triplet_He_ionization"):
     return sigmas_interp
 
 
-def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate):    
-    all_v, all_r, all_rho = parker_solution(T0, 1.3, Mp, mass_loss_rate)
-    wavelengths, fluxes = get_stellar_spectrum(spectrum_file)
+def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate, D_over_a):    
+    v_interp, rho_interp = parker_solution(T0, 1.3, Mp, mass_loss_rate)
+    wavelengths, fluxes = get_stellar_spectrum(spectrum_file, D_over_a)
 
-    #Helium testing
+    #Helium parameters
     singlet_sigmas = singlet_cross_sections(wavelengths)
     a1 = avg_cross_section(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
     triplet_sigmas = triplet_cross_sections(wavelengths)
@@ -304,9 +312,10 @@ def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate):
     rate1 = photoionization_rate(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
     rate3 = photoionization_rate(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
 
-    r_mesh, fion_interp, taus_interp = iter_fion_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp)
-    n3_interp = iter_He_sol(all_r, all_rho, all_v, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp)
+    print("Params", a1, a3, a0, photo_rate, rate1, rate3)
+    r_mesh, fion_interp, taus_interp = iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp)
+    n3_interp = iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp)
     return r_mesh, v_interp, n3_interp
 
-get_solution(sys.argv[1], 0.073 * M_jup, 0.38 * R_jup, 5000, 2e10)
+#get_solution(sys.argv[1], 0.073 * M_jup, 0.38 * R_jup, 5000, 2e10)
 
