@@ -27,7 +27,7 @@ q31a = 2.6e-8
 q31b = 4.0e-9
 Q31 = 5e-10
 
-def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp):
+def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp, max_r_over_Rp=10, num_grid=100):
     alpha_He = He_recomb_coeffs(T0)
 
     def tau_derivs(r, variables, f1_interp, f3_interp):
@@ -90,12 +90,12 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
         return [f1_deriv, f3_deriv]
         
     min_r = Rp
-    r_mesh = np.linspace(min_r, 10*Rp, 100)
+    r_mesh = np.linspace(min_r, max_r_over_Rp*Rp, num_grid)
     f1_interp = interp1d(r_mesh, np.ones(len(r_mesh)))
     f3_interp = interp1d(r_mesh, np.zeros(len(r_mesh)))
     
     while True:
-        result = solve_ivp(lambda r, y: tau_derivs(r, y, f1_interp, f3_interp), (10*Rp, min_r), [0, 0], t_eval=r_mesh[::-1])
+        result = solve_ivp(lambda r, y: tau_derivs(r, y, f1_interp, f3_interp), (max_r_over_Rp*Rp, min_r), [0, 0], t_eval=r_mesh[::-1])
         tau1_interp = interp1d(r_mesh, result.y[0][::-1])
         tau3_interp = interp1d(r_mesh, result.y[1][::-1])
         #plt.semilogy(r_mesh, tau1_interp(r_mesh))
@@ -104,7 +104,7 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
         
         result = solve_ivp(
             lambda r, y: f_derivs(r, y, tau1_interp, tau3_interp),
-            (min_r, 10*Rp),
+            (min_r, max_r_over_Rp*Rp),
             [1, 0],
             t_eval=r_mesh,
             method='Radau',
@@ -223,7 +223,7 @@ def parker_solution(T0, mu, planet_mass, mass_loss_rate):
     return interp1d(all_r, all_v), interp1d(all_r, all_rho)
 
 
-def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp):
+def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp=10, num_grid=100):
     alpha_rec = 2.59e-13 * (T0/1e4)**-0.7
             
     def tau_derivs(r, variables, fion_interp):
@@ -247,18 +247,16 @@ def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp):
         jac[0,0] = -1./v_interp(r) * photo_rate * np.exp(-tau_interp(r)) - 0.9 * rho_interp(r) * 2 * f_ion * alpha_rec / (1.3 * AMU * v_interp(r))
         return jac
 
-    r_mesh = np.linspace(Rp, 10*Rp, 100)
+    r_mesh = np.linspace(Rp, max_r_over_Rp*Rp, num_grid)
     fion_interp = interp1d(r_mesh, np.zeros(len(r_mesh)))
     taus_interp = None #interp1d(r_mesh, np.zeros(len(r_mesh)))
     
     while True:
-        result = solve_ivp(lambda r, y: tau_derivs(r, y, fion_interp), (10*Rp, Rp), [0], t_eval=r_mesh[::-1])
+        result = solve_ivp(lambda r, y: tau_derivs(r, y, fion_interp), (max_r_over_Rp*Rp, Rp), [0], t_eval=r_mesh[::-1])
         taus_interp = interp1d(r_mesh, result.y[0][::-1])
-        result = solve_ivp(lambda r, y: fion_derivs(r, y, taus_interp), (Rp, 10*Rp), [0], t_eval=r_mesh)#,
-                           #jac=lambda r, y: fion_jac(r, y, taus_interp),
-                           #method='Radau')
+        result = solve_ivp(lambda r, y: fion_derivs(r, y, taus_interp), (Rp, max_r_over_Rp*Rp), [0], t_eval=r_mesh, jac=lambda r, y: fion_jac(r, y, taus_interp), method='Radau')
         max_diff = np.max(np.abs(fion_interp(r_mesh) - result.y[0]))
-        print(max_diff)
+
         if max_diff < 1e-3:
             break
         #if np.allclose(fion_interp(r_mesh), result.y[0]):
@@ -296,7 +294,7 @@ def triplet_cross_sections(wavelengths, data_filename="triplet_He_ionization"):
     return sigmas_interp
 
 
-def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate, D_over_a):    
+def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate, D_over_a, max_r_over_Rp=10, lyman_alpha=False):    
     v_interp, rho_interp = parker_solution(T0, 1.3, Mp, mass_loss_rate)
     wavelengths, fluxes = get_stellar_spectrum(spectrum_file, D_over_a)
 
@@ -307,14 +305,20 @@ def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate, D_over_a):
     a3 = avg_cross_section(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
 
     photo_cross_sections = photoionization_cross_section(wavelengths)
+    
     a0 = avg_cross_section(wavelengths, fluxes, photo_cross_sections, 0, WAVELENGTH_0)
     photo_rate = photoionization_rate(wavelengths, fluxes, photo_cross_sections, 0, WAVELENGTH_0)
     rate1 = photoionization_rate(wavelengths, fluxes, singlet_sigmas, 0, SINGLET_ION)
     rate3 = photoionization_rate(wavelengths, fluxes, triplet_sigmas, SINGLET_ION, TRIPLET_ION)
 
     print("Params", a1, a3, a0, photo_rate, rate1, rate3)
-    r_mesh, fion_interp, taus_interp = iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp)
-    n3_interp = iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp)
+    r_mesh, fion_interp, taus_interp = iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp)
+    n3_interp = iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp, max_r_over_Rp)
+    if lyman_alpha:
+        n_HI = (1 - fion_interp(r_mesh)) * 0.1 * rho_interp(r_mesh) / (1.3 * AMU)
+        n_HI_interp = interp1d(r_mesh, n_HI)
+        return r_mesh, v_interp, n_HI_interp
+    
     return r_mesh, v_interp, n3_interp
 
 #get_solution(sys.argv[1], 0.073 * M_jup, 0.38 * R_jup, 5000, 2e10)
