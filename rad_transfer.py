@@ -15,7 +15,9 @@ m_He = 4 * 1.67e-24
 k_B = 1.38e-16
 R_sun = 7e10
 M_jup = 1.898e30
+M_earth = 5.97e27
 R_jup = 7.1e9
+R_earth = 6.378e8
 parsec = 3.086e18
 AU = 1.496e13
 
@@ -66,35 +68,47 @@ def predict_depths(wavenums, spectrum_file, Mp, Rp, T0, mass_loss_rate, Rs, D_ov
             extra_depth = 2 / Rs**2 * r * dr * (1 - np.exp(-tau))
             tot_extra_depth += extra_depth        
 
-        print(wavenum, tot_extra_depth * 1e6)
+        #print(wavenum, tot_extra_depth * 1e6)
         transit_spectrum.append(tot_extra_depth)
 
     return np.array(transit_spectrum)
 
-res = 375000
-wavenums = np.exp(np.arange(np.log(9230), np.log(9233), 1./res))
+if __name__ == "__main__":
+    res = 375000
+    wavenums = np.exp(np.arange(np.log(9230), np.log(9233), 1./res))
 
+    #GJ 436b
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 0.073 * M_jup, 0.38 * R_jup, 5000, 2e10, 0.464 * R_sun, (9.76 * parsec / 0.03 / AU), 5.98)
 
-#GJ 436b
-transit_spectrum = predict_depths(wavenums, sys.argv[1], 0.073 * M_jup, 0.38 * R_jup, 5000, 2e10, 0.464 * R_sun, (9.76 * parsec / 0.03 / AU), 5.98)
+    #HD 97658b
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 0.03 * M_jup, 0.21 * R_jup, 3000, 1e8, 0.74 * R_sun, (21.6 * parsec / 0.08 / AU), 9.9)
 
-#HD 97658b
-#transit_spectrum = predict_depths(wavenums, sys.argv[1], 0.03 * M_jup, 0.21 * R_jup, 3000, 1e8, 0.74 * R_sun, (21.6 * parsec / 0.08 / AU), 9.9)
+    #GJ 3470b
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 0.0437 * M_jup, 0.408 * R_jup, 7000, 4.6e10, 0.547 * R_sun, (29.45 * parsec / 0.0355 / AU), 9.9)
 
-#GJ 3470b
-#transit_spectrum = predict_depths(wavenums, sys.argv[1], 0.0437 * M_jup, 0.408 * R_jup, 7000, 4.6e10, 0.547 * R_sun, (29.45 * parsec / 0.0355 / AU), 9.9)
-filtered_spectrum = scipy.ndimage.filters.gaussian_filter(transit_spectrum, res/37500/2.355)
+    #55 Cnc e
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 8.08 * M_earth, 1.91 * R_earth, 5000, 1.38e10, 0.943 * R_sun, (12.59 * parsec / 0.0155 / AU), 9)
+    #print(np.max(transit_spectrum) * 1e6)
 
-error = 440e-6
-obs_wavenums = np.arange(9230, 9233, 9233/115000)
-obs_depths = np.interp(obs_wavenums, wavenums, filtered_spectrum)
-obs_depths += np.random.normal(0, error, len(obs_depths))
+    #TOI 1726.01
+    transit_spectrum = predict_depths(wavenums, sys.argv[1], 6.2 * M_earth, 2.3 * R_earth, 8000, 4e9, 0.9 * R_sun, (22.3 * parsec / 0.073 / AU), 11)
 
+    #TOI 1726.02
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 9.1 * M_earth, 2.9 * R_earth, 5000, 2e9, 0.9 * R_sun, (22.3 * parsec / 0.15 / AU), 24)
+    
+    #np.save("transit_spectrum_new.npy", transit_spectrum)
+    
+    filtered_spectrum = scipy.ndimage.filters.gaussian_filter(transit_spectrum, res/37500/2.355)
 
-plt.plot(1e8/wavenums, 1-transit_spectrum, label="Unconvolved")
-#plt.plot(1e8/wavenums, filtered_spectrum * 1e6, label="Convolved")
-plt.errorbar(1e8/obs_wavenums, obs_depths * 1e6, yerr=error*1e6, fmt='.')
-plt.xlabel("Wavelength (A)", fontsize=14)
-plt.ylabel("Transit depth (ppm)", fontsize=14)
-#plt.legend()
-plt.show()
+    error = 440e-6
+    obs_wavenums = np.arange(9230, 9233, 9233/115000)
+    obs_depths = np.interp(obs_wavenums, wavenums, filtered_spectrum)
+    obs_depths += np.random.normal(0, error, len(obs_depths))
+
+    plt.plot(1e8/wavenums, 1e6*transit_spectrum, label="Unconvolved")
+    #plt.plot(1e8/wavenums, filtered_spectrum * 1e6, label="Convolved")
+    #plt.errorbar(1e8/obs_wavenums, obs_depths * 1e6, yerr=error*1e6, fmt='.')
+    plt.xlabel("Wavelength (A)", fontsize=14)
+    plt.ylabel("Transit depth (ppm)", fontsize=14)
+    #plt.legend()
+    plt.show()
