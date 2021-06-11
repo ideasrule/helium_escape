@@ -2,6 +2,8 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy.integrate
+from typing import TypeVar, Iterable, Tuple
+import torch
 
 k_B = 1.38e-16
 m_H = 1.67e-24
@@ -20,6 +22,14 @@ F_UV = 118 / 0.0719**2
 H_to_He = 9
 gamma = 5./3
 
+length_scale = 1e9
+vel_scale = 1e6
+rho_scale = 1e-12
+mass_scale = rho_scale * length_scale**3
+time_scale = length_scale / vel_scale
+T_scale = 1e4
+
+
 def plot_iters(depths, quantity, starts, title=""):
     plt.figure()
     for i in range(len(starts) - 1):
@@ -31,16 +41,15 @@ def plot_iters(depths, quantity, starts, title=""):
     plt.title(title)
 
 def get_derivs(r, vals):
-    derivs = np.zeros(len(vals))
+    derivs = torch.zeros(len(vals))
     derivs[1:-1] = (vals[2:] - vals[:-2]) / (r[2:] - r[:-2])
     return derivs
         
-def differential_equations(r, v, rho, fion, tau, T, Rp, heating_tpci, cooling_tpci, n_H_tpci, n_e_tpci):
-    length_scale = 1e9
-    vel_scale = 1e6
-    rho_scale = 1e-10
-    mass_scale = rho_scale * length_scale**3
-    time_scale = length_scale / vel_scale    
+def differential_equations(scaled_r, scaled_v, scaled_rho, fion, scaled_T, margin=5):
+    r = scaled_r * length_scale
+    v = scaled_v * vel_scale
+    rho = scaled_rho * rho_scale / scaled_r**2
+    T = scaled_T * T_scale
     
     v_derivs = get_derivs(r, v)
     rho_derivs = get_derivs(r, rho)
@@ -52,16 +61,33 @@ def differential_equations(r, v, rho, fion, tau, T, Rp, heating_tpci, cooling_tp
     n_HI = n_H - n_HII
     n_e = n_HII
     mu = rho / (n_H + n_He + n_e)
+
+    dr = r[1:] - r[0:-1]
+    tau = torch.zeros(len(r))
+    tau[0:-1] = torch.flip(torch.cumsum(torch.flip(n_HI[:-1] * sigma_ion * dr, [0]), dim=0), dims=[0])
+    #tau = torch.append(tau, 0)
+    #tau = -cumtrapz((n_HI * sigma_ion)[::-1], r[::-1])[::-1]
+    #tau = torch.append(tau, 0)
+
+    #plt.loglog(r / Rp, tau)
+    #plt.show()
     
     continuity_diffs = get_derivs(r, r**2 * rho * v) / (mass_scale / length_scale / time_scale)
-    momentum_diffs = r**2 * (v*v_derivs + rho**-1 * get_derivs(r, (n_H + n_He + n_e) * k_B * T) + G*M/r**2) / (length_scale**3 / time_scale**2)    
-    #momentum_diffs = v*v_derivs + rho**-1 * get_derivs(r, (1.1*n_H_tpci + n_e_tpci) * k_B * T) + G*M/r**2
-    
-    heating = efficiency * F_UV * np.exp(-tau) * sigma_ion * n_HI
-    cooling = C_cool * n_HI * n_e * np.exp(-Tc / T)
-    energy_diffs = r**2 * (rho * v * get_derivs(r, k_B * T / (gamma - 1) / mu) - k_B * T * v / mu * get_derivs(r, rho) - heating_tpci + cooling_tpci) / (mass_scale * length_scale / time_scale**3)
-    loss = continuity_diffs**2 + momentum_diffs**2 + energy_diffs**2
+    momentum_diffs = r**2 * (v*v_derivs + rho**-1 * get_derivs(r, (n_H + n_He + n_e) * k_B * T) + G*M/r**2) / (length_scale**3 / time_scale**2) / 1e4
+    heating = efficiency * F_UV * torch.exp(-tau) * sigma_ion * n_HI
+    cooling = C_cool * n_HI * n_e * torch.exp(-Tc / T)
+    energy_diffs = r**2 * (rho * v * get_derivs(r, k_B * T / (gamma - 1) / mu) - k_B * T * v / mu * get_derivs(r, rho) - heating + cooling) / (mass_scale * length_scale / time_scale**3)
+    loss = (continuity_diffs**2 + momentum_diffs**2 + energy_diffs**2)[margin:-margin].sum()
 
+    #Enforce inner boundary condition
+    loss += ((v[0:5] * 1e5)**2 + (T[0:5] - 1000)**2 / 0.01**2 + (fion[0:5] * 1e3)**2).sum()
+    
+    #if torch.isnan(loss):
+    #    import pdb
+    #    pdb.set_trace()
+    
+    return loss
+    
     #plt.loglog(r / Rp, r**2 * rho * v / (mass_scale / length_scale / time_scale))
     plt.loglog(r / Rp, r**2 * v*v_derivs)
     plt.loglog(r / Rp,  -r**2 * rho**-1 * get_derivs(r, (1.1*n_H_tpci + n_e_tpci) * k_B * T))
@@ -98,6 +124,32 @@ data = np.loadtxt("cl_data.{}.cool.tab".format(number), usecols=(0,2,3))[::-1]
 heating = np.interp(radii, 14.9 * Rp - data[:,0], data[:,1])
 cooling = np.interp(radii, 14.9 * Rp - data[:,0], data[:,2])
 
-#Set up pytorch
+dtype = torch.float64
+device = torch.device("cpu")
+tensor_radii = torch.tensor(radii / length_scale, device=device, dtype=dtype)
+wind_vel = torch.tensor(wind_vel / vel_scale, device=device, dtype=dtype, requires_grad=True)
+rho = torch.tensor(rho / rho_scale * (radii / length_scale)**2, device=device, dtype=dtype, requires_grad=True)
+fion = torch.tensor(np.copy(HII), device=device, dtype=dtype, requires_grad=True)
+#T = torch.tensor(Te.copy() / T_scale, device=device, dtype=dtype, requires_grad=True)
+T = torch.tensor(np.ones(len(radii)), device=device, dtype=dtype, requires_grad=True)
+minimum_loss = np.inf
+optimizer = torch.optim.Adam([wind_vel, rho, fion, T], lr=1e-4, eps=1e-8)
 
-differential_equations(radii, wind_vel, rho, HII, tau, Te, Rp, heating, cooling, n_H, n_e)
+for t in range(int(1e5)):
+    optimizer.zero_grad()    
+    loss = differential_equations(tensor_radii, wind_vel, rho, fion, T)
+    if loss.item() < minimum_loss and not np.isnan(loss.item()):
+        minimum_loss = loss.item()
+        best_yet = [wind_vel, rho, fion, T]
+
+    if loss.item() < 1: break
+        
+    #print(loss.item())
+    if t % 100 == 0:
+        print(t, loss.item())
+    loss.backward()
+    optimizer.step()
+    
+
+plt.plot(radii, best_yet[3].detach().numpy())
+plt.show()
