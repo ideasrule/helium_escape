@@ -21,6 +21,7 @@ Tc = 118348
 F_UV = 118 / 0.0719**2
 H_to_He = 9
 gamma = 5./3
+photo_rate = 1.1e-3
 
 length_scale = Rp
 vel_scale = 1e6
@@ -50,7 +51,7 @@ def padded_diff(vals):
     result = np.append(0, result)
     return result
 
-def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T, margin=5):
+def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T, margin=5, debug=False):
     '''coeffs = np.polyfit(1/scaled_r.detach(), np.log(scaled_rho.detach()), 10)
     predicted = np.polyval(coeffs, 1/scaled_r)
     plt.plot(scaled_r.detach(), np.log(scaled_rho.detach()))
@@ -58,10 +59,10 @@ def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T
     plt.show()'''
     
     r = scaled_r * length_scale
-    v = torch.cumsum(scaled_v * vel_scale, 0) + 400
+    v = torch.abs(torch.cumsum(scaled_v * vel_scale, 0) + 400)
     rho = torch.exp(torch.cumsum(scaled_rho, 0) + 4.809) * rho_scale / scaled_r**2
-    fion = torch.cumsum(scaled_fion, 0)
-    T = torch.cumsum(scaled_T * T_scale, 0) + 1173
+    fion = torch.abs(torch.cumsum(scaled_fion, 0))
+    T = torch.abs(torch.cumsum(scaled_T * T_scale, 0) + 1173)
 
     '''plt.loglog(r.detach() / Rp, v.detach())
     plt.loglog(r.detach() / Rp, rho.detach())
@@ -83,6 +84,9 @@ def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T
     dr = r[1:] - r[0:-1]
     tau = torch.zeros(len(r))
     tau[0:-1] = torch.flip(torch.cumsum(torch.flip(n_HI[:-1] * sigma_ion * dr, [0]), dim=0), dims=[0])
+
+    #recomb coeff
+    
     #tau = torch.append(tau, 0)
     #tau = -cumtrapz((n_HI * sigma_ion)[::-1], r[::-1])[::-1]
     #tau = torch.append(tau, 0)
@@ -95,8 +99,24 @@ def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T
     heating = efficiency * F_UV * torch.exp(-tau) * sigma_ion * n_HI
     cooling = C_cool * n_HI * n_e * torch.exp(-Tc / T)
     energy_diffs = r**2 * (rho * v * get_derivs(r, k_B * T / (gamma - 1) / mu) - k_B * T * v / mu * get_derivs(r, rho) - heating + cooling) / (mass_scale * length_scale / time_scale**3)
-    loss = (continuity_diffs**2 + momentum_diffs**2 + energy_diffs**2)[margin:-margin].sum()
 
+    alpha_rec = 2.59e-13 * (T/1e4)**-0.7
+    fion_diffs = ((1 - fion) * photo_rate * torch.exp(-tau) / v - fion * n_HII * alpha_rec / v - get_derivs(r, fion)) * length_scale
+    loss = (continuity_diffs**2 + momentum_diffs**2 + energy_diffs**2 + fion_diffs**2)[margin:-margin].sum()
+
+    
+    if debug:
+        print((continuity_diffs**2)[margin:-margin].sum().detach().numpy(),
+              (momentum_diffs**2)[margin:-margin].sum().detach().numpy(),
+              (energy_diffs**2)[margin:-margin].sum().detach().numpy(),
+              (fion_diffs**2)[margin:-margin].sum().detach().numpy())
+        import pdb
+        pdb.set_trace()
+    
+    #Enforce transsonic
+    if v[-margin] < 1e6:
+        loss += (v[-margin] - 1e6)**2 / 1e4**2
+    
     #Enforce inner boundary condition
     #loss += ((v[0:5] * 1e5)**2 + (T[0:5] - 1000)**2 / 0.01**2 + (fion[0:5] * 1e3)**2).sum()
     
@@ -153,16 +173,20 @@ cooling = np.interp(radii, 14.9 * Rp - data[:,0], data[:,2])
 dtype = torch.float64
 device = torch.device("cpu")
 tensor_radii = torch.tensor(radii / length_scale, device=device, dtype=dtype)
-wind_vel = torch.tensor(padded_diff(wind_vel / vel_scale), device=device, dtype=dtype, requires_grad=True)
+#wind_vel = torch.tensor(padded_diff(wind_vel / vel_scale), device=device, dtype=dtype, requires_grad=True)
+#wind_vel = torch.tensor(np.zeros(len(radii)), device=device, dtype=dtype, requires_grad=True)
+vel_guess = np.linspace(0, 2e6, len(radii))
+wind_vel = torch.tensor(padded_diff(vel_guess / vel_scale), device=device, dtype=dtype, requires_grad=True)
+
 rho = torch.tensor(padded_diff(np.log(rho / rho_scale * (radii / length_scale)**2)), device=device, dtype=dtype, requires_grad=True)
 fion = torch.tensor(padded_diff(np.copy(HII)), device=device, dtype=dtype, requires_grad=True)
 #T = torch.tensor(padded_diff(Te.copy()) / T_scale, device=device, dtype=dtype, requires_grad=True)
 T = torch.tensor(np.zeros(len(radii)), device=device, dtype=dtype, requires_grad=True)
 minimum_loss = np.inf
 parameters = [wind_vel, rho, fion, T]
-optimizer = torch.optim.Adam(parameters, lr=1e-6, eps=1e-4)
+optimizer = torch.optim.Adam(parameters, lr=1e-5, eps=1e-4)
 
-for t in range(int(1e4)):
+for t in range(int(1e6)):
     optimizer.zero_grad()    
     loss = differential_equations(tensor_radii, wind_vel, rho, fion, T)
     if loss.item() < minimum_loss and not np.isnan(loss.item()):
@@ -172,21 +196,28 @@ for t in range(int(1e4)):
     #if loss.item() < 1: break
         
     #print(loss.item())
-    if t % 1 == 0:
+    if t % 100 == 0:
         print(t, loss.item())
     loss.backward()
-    if t % 1000 == 0:
-        print(torch.min(wind_vel.grad).detach().numpy(),
-              torch.max(wind_vel.grad).detach().numpy(),
-              torch.min(rho.grad).detach().numpy(),
-              torch.max(rho.grad).detach().numpy(),
-              torch.min(fion.grad).detach().numpy(),
-              torch.max(fion.grad).detach().numpy(),
-              torch.min(T).detach().numpy(),
-              torch.max(T).detach().numpy())
-    torch.nn.utils.clip_grad_norm_(parameters, max_norm=1e4)
+    # if t % 1000 == 0:
+    #     print(torch.min(wind_vel.grad).detach().numpy(),
+    #           torch.max(wind_vel.grad).detach().numpy(),
+    #           torch.min(rho.grad).detach().numpy(),
+    #           torch.max(rho.grad).detach().numpy(),
+    #           torch.min(fion.grad).detach().numpy(),
+    #           torch.max(fion.grad).detach().numpy(),
+    #           torch.min(T).detach().numpy(),
+    #           torch.max(T).detach().numpy())
+    #torch.nn.utils.clip_grad_norm_(parameters, max_norm=1e4)
     optimizer.step()
     
 print(minimum_loss)
-plt.plot(radii, 1100 + T_scale * np.cumsum(best_yet[3].detach().numpy()))
+differential_equations(tensor_radii, best_yet[0], best_yet[1], best_yet[2], best_yet[3], debug=True)
+
+plt.plot(radii / Rp, np.abs(1173 + T_scale * np.cumsum(best_yet[3].detach().numpy())))
+plt.plot(radii / Rp, Te)
+plt.figure()
+plt.plot(radii / Rp, np.cumsum(best_yet[0].detach().numpy()))
+plt.figure()
+plt.plot(radii / Rp, np.abs(np.cumsum(best_yet[2].detach())))
 plt.show()
