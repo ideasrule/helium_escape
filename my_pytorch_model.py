@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import scipy.integrate
 from typing import TypeVar, Iterable, Tuple
 import torch
+import copy
 
 k_B = 1.38e-16
 m_H = 1.67e-24
@@ -15,7 +16,7 @@ k = 0.9 / 1.3
 eV = 1.6e-12
 E_ion = 13.6 * eV
 sigma_ion = 1.6e-18
-efficiency = 1 #0.15
+efficiency = 0.3 #0.15
 C_cool = 7.5e-19
 Tc = 118348
 F_UV = 118 / 0.0719**2
@@ -29,21 +30,12 @@ rho_scale = 1e-12
 mass_scale = rho_scale * length_scale**3
 time_scale = length_scale / vel_scale
 T_scale = 1e4
-
-
-def plot_iters(depths, quantity, starts, title=""):
-    plt.figure()
-    for i in range(len(starts) - 1):
-        #if i != len(starts) - 2: continue
-        if i % 10 != 0: continue
-        first = starts[i]
-        end = starts[i+1]
-        plt.semilogy(radii[first:end], 10**quantity[first:end])
-    plt.title(title)
+mass_loss_scale = 1e11
 
 def get_derivs(r, vals):
     derivs = torch.zeros(len(vals))
     derivs[1:-1] = (vals[2:] - vals[:-2]) / (r[2:] - r[:-2])
+    #derivs[1:] = (vals[1:] - vals[:-1]) / (r[1:] - r[:-1])
     return derivs
 
 def padded_diff(vals):
@@ -51,16 +43,16 @@ def padded_diff(vals):
     result = np.append(0, result)
     return result
 
-def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T, margin=5, debug=False):
+def differential_equations(scaled_M_dot, scaled_r, scaled_rho, scaled_fion, scaled_T, margin=5, debug=False, eps=1e-4):
     '''coeffs = np.polyfit(1/scaled_r.detach(), np.log(scaled_rho.detach()), 10)
     predicted = np.polyval(coeffs, 1/scaled_r)
     plt.plot(scaled_r.detach(), np.log(scaled_rho.detach()))
     plt.plot(scaled_r.detach(), predicted)
     plt.show()'''
-    
+    M_dot = scaled_M_dot * mass_loss_scale
     r = scaled_r * length_scale
-    v = torch.abs(torch.cumsum(scaled_v * vel_scale, 0) + 400)
-    rho = torch.exp(torch.cumsum(scaled_rho, 0) + 4.809) * rho_scale / scaled_r**2
+    rho = torch.exp(torch.cumsum(-torch.abs(scaled_rho), 0) + 4.809) * rho_scale / scaled_r**2
+    v = torch.abs(M_dot / (4*np.pi*r**2*rho)) + eps
     fion = torch.abs(torch.cumsum(scaled_fion, 0))
     T = torch.abs(torch.cumsum(scaled_T * T_scale, 0) + 1173)
 
@@ -94,7 +86,6 @@ def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T
     #plt.loglog(r / Rp, tau)
     #plt.show()
     
-    continuity_diffs = get_derivs(r, r**2 * rho * v) / (mass_scale / length_scale / time_scale)
     momentum_diffs = r**2 * (v*v_derivs + rho**-1 * get_derivs(r, (n_H + n_He + n_e) * k_B * T) + G*M/r**2) / (length_scale**3 / time_scale**2) / 1e4
     heating = efficiency * F_UV * torch.exp(-tau) * sigma_ion * n_HI
     cooling = C_cool * n_HI * n_e * torch.exp(-Tc / T)
@@ -102,57 +93,39 @@ def differential_equations(scaled_r, scaled_v, scaled_rho, scaled_fion, scaled_T
 
     alpha_rec = 2.59e-13 * (T/1e4)**-0.7
     fion_diffs = ((1 - fion) * photo_rate * torch.exp(-tau) / v - fion * n_HII * alpha_rec / v - get_derivs(r, fion)) * length_scale
-    loss = (continuity_diffs**2 + momentum_diffs**2 + energy_diffs**2 + fion_diffs**2)[margin:-margin].sum()
+    loss = (momentum_diffs**2 + energy_diffs**2 + fion_diffs**2)[margin:-margin].sum()
 
     
     if debug:
-        print((continuity_diffs**2)[margin:-margin].sum().detach().numpy(),
+        print(
               (momentum_diffs**2)[margin:-margin].sum().detach().numpy(),
               (energy_diffs**2)[margin:-margin].sum().detach().numpy(),
               (fion_diffs**2)[margin:-margin].sum().detach().numpy())
+        plt.plot(r/Rp, v.detach())
+        plt.title("v")
+        plt.figure()
+        plt.semilogy(r/Rp, rho.detach())
+        plt.title("rho")
+        plt.figure()
+        plt.plot(r/Rp, fion.detach())
+        plt.title("fion")
+        plt.figure()
+        plt.plot(r/Rp, T.detach())
+        plt.title("T")
+        plt.show()
+        
         import pdb
         pdb.set_trace()
     
     #Enforce transsonic
-    if v[-margin] < 1e6:
-        loss += (v[-margin] - 1e6)**2 / 1e4**2
-    
-    #Enforce inner boundary condition
-    #loss += ((v[0:5] * 1e5)**2 + (T[0:5] - 1000)**2 / 0.01**2 + (fion[0:5] * 1e3)**2).sum()
-    
-    #if torch.isnan(loss):
-    #    import pdb
-    #    pdb.set_trace()
-
-    '''plt.figure()
-    plt.plot(r.detach() / Rp, continuity_diffs.detach())
-    plt.plot(r.detach() / Rp, momentum_diffs.detach())
-    plt.plot(r.detach() / Rp, energy_diffs.detach())
-    plt.show()'''
+    if v[-margin] < 1.5e6:
+        loss += (v[-margin] - 1.5e6)**2 / 1e4**2
+ 
     if torch.isinf(loss):
         loss *= 0
         loss += 1e9
     return loss
     
-    #plt.loglog(r / Rp, r**2 * rho * v / (mass_scale / length_scale / time_scale))
-    plt.loglog(r / Rp, r**2 * v*v_derivs)
-    plt.loglog(r / Rp,  -r**2 * rho**-1 * get_derivs(r, (1.1*n_H_tpci + n_e_tpci) * k_B * T))
-    plt.loglog(r / Rp, G*M / r**2 * r**2)
-    plt.show()
-    
-    plt.loglog(r / Rp, n_e)
-    plt.loglog(r / Rp, n_e_tpci)
-    plt.show()
-    
-    plt.plot(r / Rp, continuity_diffs)
-    plt.figure()
-    plt.plot(r / Rp, momentum_diffs)
-    plt.figure()
-    #plt.plot(r / Rp, rho * v * get_derivs(r, k_B * T / (gamma - 1) / mu) - k_B * T * v / mu * get_derivs(r, rho))
-    #plt.plot(r / Rp, heating_tpci - cooling_tpci)
-    plt.plot(r / Rp, energy_diffs)
-    plt.show()
-    return loss
     
 
 number = sys.argv[1]
@@ -170,8 +143,12 @@ data = np.loadtxt("cl_data.{}.cool.tab".format(number), usecols=(0,2,3))[::-1]
 heating = np.interp(radii, 14.9 * Rp - data[:,0], data[:,1])
 cooling = np.interp(radii, 14.9 * Rp - data[:,0], data[:,2])
 
+#plt.loglog(radii/Rp, wind_vel)
+#plt.show()
+
 dtype = torch.float64
 device = torch.device("cpu")
+M_dot = torch.tensor((8e11 / mass_loss_scale), device=device, dtype=dtype, requires_grad=True)
 tensor_radii = torch.tensor(radii / length_scale, device=device, dtype=dtype)
 #wind_vel = torch.tensor(padded_diff(wind_vel / vel_scale), device=device, dtype=dtype, requires_grad=True)
 #wind_vel = torch.tensor(np.zeros(len(radii)), device=device, dtype=dtype, requires_grad=True)
@@ -183,20 +160,20 @@ fion = torch.tensor(padded_diff(np.copy(HII)), device=device, dtype=dtype, requi
 #T = torch.tensor(padded_diff(Te.copy()) / T_scale, device=device, dtype=dtype, requires_grad=True)
 T = torch.tensor(np.zeros(len(radii)), device=device, dtype=dtype, requires_grad=True)
 minimum_loss = np.inf
-parameters = [wind_vel, rho, fion, T]
-optimizer = torch.optim.Adam(parameters, lr=1e-5, eps=1e-4)
+parameters = [M_dot, rho, fion, T]
+optimizer = torch.optim.Adam(parameters, lr=1e-6, eps=1e-8)
 
 for t in range(int(1e6)):
     optimizer.zero_grad()    
-    loss = differential_equations(tensor_radii, wind_vel, rho, fion, T)
+    loss = differential_equations(M_dot, tensor_radii, rho, fion, T)
     if loss.item() < minimum_loss and not np.isnan(loss.item()):
         minimum_loss = loss.item()
-        best_yet = [torch.clone(wind_vel), torch.clone(rho), torch.clone(fion), torch.clone(T)]
+        best_yet = copy.deepcopy(parameters) #[M_dot.clone(), torch.clone(wind_vel), torch.clone(rho), torch.clone(fion), torch.clone(T)]
 
     #if loss.item() < 1: break
         
     #print(loss.item())
-    if t % 100 == 0:
+    if t % 100 == 0:\
         print(t, loss.item())
     loss.backward()
     # if t % 1000 == 0:
@@ -212,12 +189,12 @@ for t in range(int(1e6)):
     optimizer.step()
     
 print(minimum_loss)
-differential_equations(tensor_radii, best_yet[0], best_yet[1], best_yet[2], best_yet[3], debug=True)
+differential_equations(best_yet[0], tensor_radii, best_yet[1], best_yet[2], best_yet[3], debug=True)
 
 plt.plot(radii / Rp, np.abs(1173 + T_scale * np.cumsum(best_yet[3].detach().numpy())))
 plt.plot(radii / Rp, Te)
 plt.figure()
-plt.plot(radii / Rp, np.cumsum(best_yet[0].detach().numpy()))
-plt.figure()
+#plt.plot(radii / Rp, np.cumsum(best_yet[1].detach().numpy()))
+#plt.figure()
 plt.plot(radii / Rp, np.abs(np.cumsum(best_yet[2].detach())))
 plt.show()
