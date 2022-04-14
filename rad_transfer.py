@@ -25,8 +25,6 @@ AU = 1.496e13
 def get_tau(wavenum, b, n3_interp, T0, max_r, v_interp, epsilon=0.01):
     line_wavenums, fs = np.loadtxt("He_line_data", unpack=True)
     assert(len(line_wavenums) == 3)
-    #wavenums = 9230.868568
-    #fs = 1.7974e-1
     
     sigma_0 = np.pi * e**2 * fs / m_e / c**2
     doppler_broadening = np.sqrt(k_B * T0 / m_He) * line_wavenums / c
@@ -90,19 +88,30 @@ if __name__ == "__main__":
     #transit_spectrum = predict_depths(wavenums, sys.argv[1], 8.08 * M_earth, 1.91 * R_earth, 5000, 1.38e10, 0.943 * R_sun, (12.59 * parsec / 0.0155 / AU), 9)
     #print(np.max(transit_spectrum) * 1e6)
 
+    #TOI 560.01
+    transit_spectrum = predict_depths(wavenums, sys.argv[1], 11 * M_earth, 2.8 * R_earth, 4500, 6e9, 0.665 * R_sun, (31.6 * parsec / 0.0596 / AU), 11)
+
     #TOI 1726.01
-    transit_spectrum = predict_depths(wavenums, sys.argv[1], 6.2 * M_earth, 2.3 * R_earth, 8000, 4e9, 0.9 * R_sun, (22.3 * parsec / 0.073 / AU), 11)
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 7.9 * M_earth, 2.3 * R_earth, 2000, 4e9, 0.9 * R_sun, (22.3 * parsec / 0.073 / AU), 11)
 
     #TOI 1726.02
-    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 9.1 * M_earth, 2.9 * R_earth, 5000, 2e9, 0.9 * R_sun, (22.3 * parsec / 0.15 / AU), 24)
-    
-    #np.save("transit_spectrum_new.npy", transit_spectrum)
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 10.6 * M_earth, 2.9 * R_earth, 5000, 2e9, 0.9 * R_sun, (22.3 * parsec / 0.15 / AU), 24)
+
+    #K2-135c
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 12 * M_earth, 3.0 * R_earth, 6000, 1e10, 0.66 * R_sun, (59.3 * parsec / 0.11 / AU), 24)
+
+    #TOI 1430.01
+    #transit_spectrum = predict_depths(wavenums, sys.argv[1], 6 * M_earth, 2.2 * R_earth, 5067, 6e9, 0.78 * R_sun, (41.2 * parsec / 0.071 / AU), 11)
     
     filtered_spectrum = scipy.ndimage.filters.gaussian_filter(transit_spectrum, res/37500/2.355)
 
-    error = 440e-6
+    error = 2000e-6 #330e-6
     obs_wavenums = np.arange(9230, 9233, 9233/115000)
     obs_depths = np.interp(obs_wavenums, wavenums, filtered_spectrum)
+
+    chi_sqr = np.sum((obs_depths / error)**2)
+    print("Chi sqr is", chi_sqr)
+    
     obs_depths += np.random.normal(0, error, len(obs_depths))
 
     plt.plot(1e8/wavenums, 1e6*transit_spectrum, label="Unconvolved")
