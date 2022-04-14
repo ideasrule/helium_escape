@@ -10,8 +10,8 @@ from simulate_escape import get_solution
 e = 4.8032e-10
 m_e = 9.11e-28
 c = 3e10
-A = 1.0216e7
-m_He = 4 * 1.67e-24
+A = 4.7e8
+m_H = 4 * 1.67e-24
 k_B = 1.38e-16
 R_sun = 7e10
 M_jup = 1.898e30
@@ -31,7 +31,7 @@ def get_tau(wavenum, b, n3_interp, T0, max_r, v_interp, epsilon=0.01):
     #fs = 1.7974e-1
     
     sigma_0 = np.pi * e**2 * fs / m_e / c**2
-    doppler_broadening = np.sqrt(k_B * T0 / m_He) * line_wavenums / c
+    doppler_broadening = np.sqrt(k_B * T0 / m_H) * line_wavenums / c
     
     def integrand(theta, line_index):
         r = b / np.cos(theta)
@@ -97,7 +97,8 @@ wavenums = np.exp(np.arange(np.log(82243), np.log(82271), 1./res))
 #transit_spectrum = predict_depths(wavenums, sys.argv[1], 6.2 * M_earth, 2.3 * R_earth, 3000, 4e9, 0.9 * R_sun, (22.3 * parsec / 0.073 / AU), 11)
 
 #TOI 1726.02
-transit_spectrum = predict_depths(wavenums, sys.argv[1], 9.1 * M_earth, 2.9 * R_earth, 8000, 2e9, 0.9 * R_sun, (22.3 * parsec / 0.15 / AU), 24)
+#transit_spectrum = predict_depths(wavenums, sys.argv[1], 9.1 * M_earth, 2.9 * R_earth, 8000, 2e9, 0.9 * R_sun, (22.3 * parsec / 0.15 / AU), 24)
+transit_spectrum = predict_depths(wavenums, sys.argv[1], 11 * M_earth, 2.8 * R_earth, 4500, 6e9, 0.665 * R_sun, (31.6 * parsec / 0.0596 / AU), 11)
 
 filtered_spectrum = scipy.ndimage.filters.gaussian_filter(transit_spectrum, res/37500/2.355)
 
