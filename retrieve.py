@@ -11,25 +11,12 @@ from simulate_escape import get_solution
 import time
 import corner
 import pickle
+from configparser import ConfigParser
 import dynesty.utils
 from dynesty import NestedSampler
+from constants import e, m_e, c, A, m_He, k_B, R_sun, R_earth, M_earth, parsec, AU, HOUR_TO_SEC, DAY_TO_SEC, CM_TO_ANGSTROM
 
 
-e = 4.8032e-10
-m_e = 9.11e-28
-c = 3e10
-A = 1.0216e7
-m_He = 4 * 1.67e-24
-k_B = 1.38e-16
-R_sun = 7e10
-M_jup = 1.898e30
-M_earth = 5.97e27
-R_jup = 7.1e9
-R_earth = 6.378e8
-parsec = 3.086e18
-AU = 1.496e13
-HOUR_TO_SEC = 3600
-DAY_TO_SEC = 86400
 line_wavenums = np.array([9231.856483, 9230.868568, 9230.792143])
 fs = np.array([5.9902e-2, 1.7974e-1, 2.9958e-1])
 
@@ -77,7 +64,6 @@ def predict_depths(wavenums, spectrum_file, Mp, Rp, T0, mass_loss_rate, Rs, D_ov
             tot_extra_depth += extra_depth
             taus[w,r_index] = tau
 
-        #print(wavenum, tot_extra_depth * 1e6)
         transit_spectrum.append(tot_extra_depth)
 
     end = time.time()
@@ -88,19 +74,19 @@ def simulate_transit(params, wavs, times, tau_interp, v_flow, N=100):
     radius = N/2
     x_s = N/2
     y_s = N/2
-    pixel_scale = params["Rs"] / radius
+    pixel_scale = params["Rs"] * R_sun / radius
     
     x_mesh, y_mesh = np.meshgrid(np.arange(N), np.arange(N))
     r = np.sqrt((x_mesh - x_s)**2 + (y_mesh - y_s)**2)
     
     mu = np.sqrt(1 - r**2 / radius**2)
-    star = 1 - np.sum([params["limb_dark"][k-1] * (1 - mu**k) for k in range(1,5)], axis=0)
+    star = 1 - np.sum([params["limb_dark"][k-1] * (1 - mu**(k/2)) for k in range(1,5)], axis=0)
     star[r > radius] = 0
     profile_2D = []
     
     for t in times:
-        x_p = x_s + 2*np.pi*(params["aRs"] * params["Rs"]) * t / (params["P"] * DAY_TO_SEC * pixel_scale)
-        y_p = y_s - params["b"] * params["Rs"] / pixel_scale
+        x_p = x_s + 2*np.pi*(params["a"] * AU) * t / (params["P"] * DAY_TO_SEC * pixel_scale)
+        y_p = y_s - params["b"] * params["Rs"] * R_sun / pixel_scale
         planet_dist = np.sqrt((x_mesh - x_p)**2 + (y_mesh - y_p)**2) * pixel_scale
         images = star * np.exp(-tau_interp(planet_dist))
         curr_profile = 1 - np.sum(images, axis=(1,2)) / np.sum(star)
@@ -109,68 +95,74 @@ def simulate_transit(params, wavs, times, tau_interp, v_flow, N=100):
         curr_profile = scipy.ndimage.filters.gaussian_filter(curr_profile, 110000/25000/2.355)
         profile_2D.append(curr_profile)
 
-    #profile_2D = np.array(profile_2D)
-    #profile_2D = 1 - profile_2D
     return np.array(profile_2D)
     
+
+def get_obs_data(spectrum_filename, error_filename, min_wav, max_wav):
+    with open(spectrum_filename) as f:
+        obs_times = np.array([float(t) for t in f.readline().strip().split(",")])
+        obs_wavs = np.array([float(t) for t in f.readline().strip().split(",")])
+
+    obs_excess = 0.01 * np.loadtxt(spectrum_filename, skiprows=2, delimiter=",")
+    obs_excess_error = 0.01 * np.loadtxt(error_filename, skiprows=5, delimiter=",")
+    cond = np.logical_and(obs_wavs > min_wav, obs_wavs < max_wav)
+    obs_wavs = obs_wavs[cond]
+    obs_excess = obs_excess[:,cond]
+    obs_excess_error = obs_excess_error[:,cond]
+    return obs_times, obs_wavs, obs_excess, obs_excess_error
+
+def get_ln_like(params, config, obs_times, obs_wavs, obs_excess, obs_excess_error, plot=False):
+    T, log_mass_loss_rate, v_flow = params
+    mass_loss_rate = 10**log_mass_loss_rate
+    obs_wavenums = CM_TO_ANGSTROM / obs_wavs
+    transit_spectrum, taus, physical_radii = predict_depths(obs_wavenums, config["stellar_spectrum"], config["Mp"] * M_earth, config["Rp"] * R_earth, T, mass_loss_rate, config["Rs"] * R_sun, (config["dist"] * parsec / config["a"] / AU), 11)
+    tau_interp = scipy.interpolate.interp1d(physical_radii, taus, bounds_error=False, fill_value=(0, 0))
+    profile_2D = simulate_transit(config, obs_wavs, obs_times * HOUR_TO_SEC, tau_interp, v_flow)
+    residuals = obs_excess - profile_2D
+    ln_like = -0.5 * np.sum(residuals**2 / obs_excess_error**2 + np.log(2 * np.pi * obs_excess_error**2))
+
+    print(np.sum(residuals**2/obs_excess_error**2)/(residuals.shape[0] * residuals.shape[1]), T, log_mass_loss_rate, v_flow/1e5)
+    
+    if plot:
+        plt.figure()
+        plt.subplot(1,3,1)
+        plt.imshow(obs_excess, vmin=-0.01, vmax=0.02)
+        plt.subplot(1,3,2)
+        plt.imshow(profile_2D, vmin=-0.01, vmax=0.02)
+        plt.subplot(1,3,3)
+        plt.imshow(residuals, vmin=-0.01, vmax=0.02)
+
+    return ln_like
 
 def transform_prior(cube):
     new_cube = np.zeros(len(cube))
     
     #Shift
     mins =  [3e3, 9, -10e5]
-    maxes = [1e4, 11, 10e5]
+    maxes = [1.5e4, 11.5, 10e5]
 
     for i in range(len(mins)):
         new_cube[i] = mins[i] + (maxes[i] - mins[i]) * cube[i]
     return new_cube
 
-star_spectrum_filename = "/home/stanley/backup_external/toi560/final_stellar_spectrum.txt"
-spectrum_filename = "toi560_excess_night1"
-error_filename = "toi560_excess_night1_errors"
-with open(spectrum_filename) as f:
-    obs_times = np.array([float(t) for t in f.readline().strip().split(",")])
-    obs_wavs = np.array([float(t) for t in f.readline().strip().split(",")])
-    obs_wavenums = 1e8 / obs_wavs
+parser = ConfigParser()
+parser.optionxform = str
+parser.read(sys.argv[1])
+config = dict(parser.items("DEFAULT"))
+for key in config:
+    try:
+        config[key] = eval(config[key])
+    except:
+        pass
+print(config)
 
-obs_excess = 0.01 * np.loadtxt(spectrum_filename, skiprows=2, delimiter=",")
-obs_excess_error = 0.01 * np.loadtxt(error_filename, skiprows=5, delimiter=",")
-cond = np.logical_and(obs_wavs > 10831, obs_wavs < 10835)
-obs_wavs = obs_wavs[cond]
-obs_excess = obs_excess[:,cond]
-obs_excess_error = obs_excess_error[:,cond]
-obs_wavenums = 1e8 / obs_wavs
+obs_times, obs_wavs, obs_excess, obs_excess_error = get_obs_data(
+    config["spectrum"], config["error"], config["min_wav"], config["max_wav"])
 
-transit_params = {"Rs": 0.665 * R_sun,
-          "aRs": 19.98,
-          "b": 0.566,
-          "P": 6.3980420,
-          "acceleration": 117,
-          "limb_dark": [0.0949594, 0.34250499, 0.51543851, -0.28607617]
-         }
+def multinest_ln_like(cube):
+    return get_ln_like(cube, config, obs_times, obs_wavs, obs_excess, obs_excess_error)
 
-def get_ln_like(params, plot=False):
-    T, log_mass_loss_rate, v_flow = params
-    mass_loss_rate = 10**log_mass_loss_rate
-    transit_spectrum, taus, physical_radii = predict_depths(obs_wavenums, star_spectrum_filename, 11 * M_earth, 2.8 * R_earth, T, mass_loss_rate, 0.665 * R_sun, (31.6 * parsec / 0.0596 / AU), 11)
-    tau_interp = scipy.interpolate.interp1d(physical_radii, taus, bounds_error=False, fill_value=(0, 0))
-    profile_2D = simulate_transit(transit_params, obs_wavs, obs_times * HOUR_TO_SEC, tau_interp, v_flow)
-    residuals = obs_excess - profile_2D
-    ln_like = -0.5 * np.sum(residuals**2 / obs_excess_error**2 + np.log(2 * np.pi * obs_excess_error**2))
-
-    #plt.imshow(obs_excess)
-    #plt.figure()
-    #plt.imshow(profile_2D)
-    #plt.show()
-    print(np.sum(residuals**2/obs_excess_error**2)/(residuals.shape[0] * residuals.shape[1]), T, log_mass_loss_rate, v_flow/1e5)
-    
-    if plot:
-        plt.figure()
-        plt.imshow(residuals)
-
-    return ln_like
-
-sampler = NestedSampler(get_ln_like, transform_prior, 3, bound='multi',
+sampler = NestedSampler(multinest_ln_like, transform_prior, 3, bound='multi',
                         nlive=100)
 sampler.run_nested()
 result = sampler.results
@@ -180,9 +172,8 @@ result.weights = normalized_weights
 with open("dynesty_result.pkl", "wb") as f:
     pickle.dump(result, f)
 
-
 best_params = result.samples[np.argmax(result.logl)]
-get_ln_like(best_params, plot=True)
+get_ln_like(best_params, config, obs_times, obs_wavs, obs_excess, obs_excess_error, plot=True)
 plt.savefig("best_fit.png")
 
 plt.figure()

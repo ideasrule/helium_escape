@@ -7,21 +7,11 @@ import scipy.interpolate
 from scipy.interpolate import interp1d
 import time
 import pickle
+from constants import M_jup, R_jup, c, AMU, G, k_B, eV_to_erg, Mb_to_cm2, CM_TO_ANGSTROM, h
 
-M_jup = 1.898e30
-R_jup = 7.1e9
-c = 3e10
-h = 6.626e-27
-CM_TO_ANGSTROM = 1e8
 WAVELENGTH_0 = 912 / CM_TO_ANGSTROM
 SINGLET_ION = 505 / CM_TO_ANGSTROM
 TRIPLET_ION = 2588 / CM_TO_ANGSTROM
-
-AMU = 1.67e-24
-G = 6.67e-8
-k_B = 1.38e-16
-eV_to_erg = 1.6e-12
-Mb_to_cm2 = 1e-18
 
 A31 = 1.272e-4
 q13a = 4.5e-20
@@ -177,7 +167,7 @@ def He_recomb_coeffs(T):
 def get_stellar_spectrum(filename, D_over_a):
     wavelengths, fluxes = np.loadtxt(filename, unpack=True)
     #return wavelengths / CM_TO_ANGSTROM, fluxes * CM_TO_ANGSTROM / 0.07**2
-    return wavelengths / CM_TO_ANGSTROM, fluxes * CM_TO_ANGSTROM / 0.06**2
+    return wavelengths / CM_TO_ANGSTROM, fluxes * CM_TO_ANGSTROM / 0.06**2 / 2
 
 
     with astropy.io.fits.open(filename) as hdul:
