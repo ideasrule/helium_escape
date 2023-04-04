@@ -104,7 +104,7 @@ def get_obs_data(spectrum_filename, error_filename, min_wav, max_wav):
         obs_wavs = np.array([float(t) for t in f.readline().strip().split(",")])
 
     obs_excess = 0.01 * np.loadtxt(spectrum_filename, skiprows=2, delimiter=",")
-    obs_excess_error = 0.01 * np.loadtxt(error_filename, skiprows=5, delimiter=",")
+    obs_excess_error = 0.01 * np.loadtxt(error_filename, skiprows=2, delimiter=",")
     cond = np.logical_and(obs_wavs > min_wav, obs_wavs < max_wav)
     obs_wavs = obs_wavs[cond]
     obs_excess = obs_excess[:,cond]
@@ -139,7 +139,7 @@ def transform_prior(cube):
     
     #Shift
     mins =  [3e3, 9, -10e5]
-    maxes = [1.5e4, 11.5, 10e5]
+    maxes = [1.5e4, 11, 10e5]
 
     for i in range(len(mins)):
         new_cube[i] = mins[i] + (maxes[i] - mins[i]) * cube[i]
