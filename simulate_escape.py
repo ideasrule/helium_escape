@@ -253,12 +253,13 @@ def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp=10
         return jac
 
     r_mesh = np.linspace(Rp, max_r_over_Rp*Rp, num_grid)
-    fion_interp = interp1d(r_mesh, np.zeros(len(r_mesh)))
+    fion_interp = interp1d(r_mesh, np.zeros(len(r_mesh)), bounds_error=False, fill_value=(0,1))
     taus_interp = None #interp1d(r_mesh, np.zeros(len(r_mesh)))
     
     while True:
         result = solve_ivp(lambda r, y: tau_derivs(r, y, fion_interp), (max_r_over_Rp*Rp, Rp), [0], t_eval=r_mesh[::-1], jac=lambda r, y: [[0]], method='Radau')
-        taus_interp = interp1d(r_mesh, result.y[0][::-1])
+        taus_on_mesh = result.y[0][::-1]
+        taus_interp = interp1d(r_mesh, taus_on_mesh, bounds_error=False, fill_value=(taus_on_mesh[0], taus_on_mesh[-1]))
         result = solve_ivp(lambda r, y: fion_derivs(r, y, taus_interp), (Rp, max_r_over_Rp*Rp), [0], t_eval=r_mesh, jac=lambda r, y: fion_jac(r, y, taus_interp), method='Radau')
         max_diff = np.max(np.abs(fion_interp(r_mesh) - result.y[0]))
 
@@ -266,7 +267,7 @@ def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp=10
             break
         #if np.allclose(fion_interp(r_mesh), result.y[0]):
         #    break
-        fion_interp = interp1d(r_mesh, result.y[0])
+        fion_interp = interp1d(r_mesh, result.y[0], bounds_error=False, fill_value=(0,1))
         
     return r_mesh, fion_interp, taus_interp
 
