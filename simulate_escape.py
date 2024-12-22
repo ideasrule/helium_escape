@@ -9,6 +9,10 @@ import time
 import pickle
 from constants import M_jup, R_jup, c, AMU, G, k_B, eV_to_erg, Mb_to_cm2, CM_TO_ANGSTROM, h
 
+f_He = 0.1
+f_H = 1 - f_He
+mu = 4 * f_He + 1 * (1 - f_He)
+
 WAVELENGTH_0 = 912 / CM_TO_ANGSTROM
 SINGLET_ION = 505 / CM_TO_ANGSTROM
 TRIPLET_ION = 2588 / CM_TO_ANGSTROM
@@ -28,8 +32,8 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
             raise TimeoutError("timeout in tau_derivs of iter_He_sol")
         f1, f3 = variables
         f3 /= scale_factor
-        tau1_deriv = -rho_interp(r) / 1.3 / AMU * (a0 * (1 - fion_interp(r)) * 0.9 + a1 * 0.1 * f1_interp(r))
-        tau3_deriv = -rho_interp(r) / 1.3 / AMU * a3 * 0.1 * f3_interp(r)
+        tau1_deriv = -rho_interp(r) / mu / AMU * (a0 * (1 - fion_interp(r)) * f_H + a1 * f_He * f1_interp(r))
+        tau3_deriv = -rho_interp(r) / mu / AMU * a3 * f_He * f3_interp(r)
         #assert(tau3_deriv <= 0)
         #assert(tau1_deriv <= 0)
         #print(tau1_deriv, tau3_deriv)
@@ -37,8 +41,8 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
 
     def tau_jacob(r, variables, f1_interp, f3_interp):
         jac = np.zeros((2,2))
-        jac[0,0] = -rho_interp(r) / 1.3 / AMU * a1 * 0.1 * f1_interp(r)
-        jac[1,1] = -rho_interp(r) / 1.3 / AMU * a3 * 0.1
+        jac[0,0] = -rho_interp(r) / mu / AMU * a1 * f_He * f1_interp(r)
+        jac[1,1] = -rho_interp(r) / mu / AMU * a3 * f_He
         return jac
 
     def f_jacob(r, variables, tau1_interp, tau3_interp):        
@@ -48,7 +52,7 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
         tau3 = tau3_interp(r)
         alpha1 = alpha_He / 4
         alpha3 = 3 * alpha_He / 4
-        n_H = rho_interp(r) / 1.3 / AMU * 0.9
+        n_H = rho_interp(r) / mu / AMU * f_H
         n_H0 = (1 - fion_interp(r)) * n_H
         n_e = fion_interp(r) * n_H0
         ionized_frac = 1 - f1 - f3
@@ -73,7 +77,7 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
         tau3 = tau3_interp(r)
         alpha1 = alpha_He / 4
         alpha3 = 3 * alpha_He / 4
-        n_H = rho_interp(r) / 1.3 / AMU * 0.9
+        n_H = rho_interp(r) / mu / AMU * f_H
         n_H0 = (1 - fion_interp(r)) * n_H
         n_e = fion_interp(r) * n_H0
         ionized_frac = 1 - f1 - f3
@@ -139,7 +143,7 @@ def iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rat
         #change print_rates to True to print
         f_derivs(r, [f1_interp(r), f3_interp(r)], tau1_interp, tau3_interp, print_rates=False)
     
-    n_He = 0.1 * rho_interp(r_mesh) / (1.3 * AMU)
+    n_He = f_He * rho_interp(r_mesh) / (mu * AMU)
     n_singlet = n_He * f1_interp(r_mesh)
     n_triplet = n_He * f3_interp(r_mesh) / scale_factor
     n_HeII = n_He - n_singlet - n_triplet
@@ -227,7 +231,7 @@ def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp=10
         if time.time() - start > timeout:
             raise TimeoutError("timeout in tau_derivs of iter_fion_sol")
         neutral_fraction = 1 - fion_interp(r)
-        tau_deriv = -neutral_fraction * rho_interp(r) * 0.9 * a0 / 1.3 / AMU
+        tau_deriv = -neutral_fraction * rho_interp(r) * f_H * a0 / mu / AMU
         assert(tau_deriv < 1e-10)
         return [tau_deriv]
 
@@ -241,15 +245,13 @@ def iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp=10
         f_ion = variables[0]
         tau_0 = tau_interp(r)
         neutral_fraction = 1 - f_ion
-        fion_deriv = neutral_fraction / v_interp(r) * photo_rate * np.exp(-tau_0) - 0.9 * rho_interp(r) * f_ion**2 * alpha_rec / (1.3 * AMU * v_interp(r))
-        #print(r, neutral_fraction / v_interp(r) * photo_rate * np.exp(-tau_0), 0.9 * rho_interp(r) * f_ion**2 * alpha_rec / (1.3 * AMU * v_interp(r)))
-        #print(r, f_ion, fion_deriv)
+        fion_deriv = neutral_fraction / v_interp(r) * photo_rate * np.exp(-tau_0) - f_H * rho_interp(r) * f_ion**2 * alpha_rec / (mu * AMU * v_interp(r))
         return [fion_deriv]
 
     def fion_jac(r, variables, tau_interp):
         f_ion = variables[0]
         jac = np.zeros((1,1))
-        jac[0,0] = -1./v_interp(r) * photo_rate * np.exp(-tau_interp(r)) - 0.9 * rho_interp(r) * 2 * f_ion * alpha_rec / (1.3 * AMU * v_interp(r))
+        jac[0,0] = -1./v_interp(r) * photo_rate * np.exp(-tau_interp(r)) - f_H * rho_interp(r) * 2 * f_ion * alpha_rec / (mu * AMU * v_interp(r))
         return jac
 
     r_mesh = np.linspace(Rp, max_r_over_Rp*Rp, num_grid)
@@ -296,7 +298,7 @@ def triplet_cross_sections(wavelengths, data_filename="triplet_He_ionization"):
 
 
 def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate, D_over_a, max_r_over_Rp=10, lyman_alpha=False):    
-    v_interp, rho_interp = parker_solution(T0, 1.3, Mp, mass_loss_rate)
+    v_interp, rho_interp = parker_solution(T0, mu, Mp, mass_loss_rate)
     wavelengths, fluxes = get_stellar_spectrum(spectrum_file, D_over_a)
 
     #Helium parameters
@@ -316,7 +318,7 @@ def get_solution(spectrum_file, Mp, Rp, T0, mass_loss_rate, D_over_a, max_r_over
     r_mesh, fion_interp, taus_interp = iter_fion_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, max_r_over_Rp)
     n3_interp, n_singlet, n_triplet, n_He = iter_He_sol(v_interp, rho_interp, a0, photo_rate, T0, Rp, a1, a3, rate1, rate3, fion_interp, max_r_over_Rp)
     if lyman_alpha:
-        n_HI = (1 - fion_interp(r_mesh)) * 0.1 * rho_interp(r_mesh) / (1.3 * AMU)
+        n_HI = (1 - fion_interp(r_mesh)) * f_H * rho_interp(r_mesh) / (mu * AMU)
         n_HI_interp = interp1d(r_mesh, n_HI)
         return r_mesh, v_interp, n_HI_interp
 
